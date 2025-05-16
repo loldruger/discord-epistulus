@@ -9,11 +9,8 @@
     pkgs.pkg-config # Added pkg-config for finding libraries
     pkgs.openssl # Added openssl runtime libraries
     pkgs.openssl.dev # Added openssl development files
-    # pkgs.go
-    # pkgs.python311
-    # pkgs.python311Packages.pip
-    # pkgs.nodejs_20
-    # pkgs.nodePackages.nodemon
+    pkgs.docker
+    pkgs.sudo
   ];
   # Sets environment variables in the workspace
   env = {
@@ -25,6 +22,8 @@
     # Search for the extensions you want on https://open-vsx.org/ and use "publisher.id"
     extensions = [
       # "vscodevim.vim"
+      "fill-labs.dependi"
+      "rust-lang.rust-analyzer"
     ];
     # Enable previews
     previews = {
