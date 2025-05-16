@@ -5,6 +5,10 @@
   channel = "stable-24.05"; # or "unstable"
   # Use https://search.nixos.org/packages to find packages
   packages = [
+    pkgs.gcc # Added GCC for C compilation
+    pkgs.pkg-config # Added pkg-config for finding libraries
+    pkgs.openssl # Added openssl runtime libraries
+    pkgs.openssl.dev # Added openssl development files
     # pkgs.go
     # pkgs.python311
     # pkgs.python311Packages.pip
@@ -12,7 +16,11 @@
     # pkgs.nodePackages.nodemon
   ];
   # Sets environment variables in the workspace
-  env = {};
+  env = {
+    OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
+    OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
+    PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+  };
   idx = {
     # Search for the extensions you want on https://open-vsx.org/ and use "publisher.id"
     extensions = [
