@@ -1,10 +1,11 @@
-use axum::{routing::get, Router}; // Axum 추가
+use axum::{routing::get, Router};
 use serenity::async_trait;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 use std::env;
-use std::net::SocketAddr; // SocketAddr 추가
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
 
 struct Handler;
 
@@ -13,7 +14,7 @@ impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
         if msg.content == "!ping" {
             if let Err(why) = msg.channel_id.say(&ctx.http, "Pong!").await {
-                println!("Error sending message: {why:?}");
+                eprintln!("Error sending message: {:?}", why);
             }
         }
     }
@@ -23,7 +24,6 @@ impl EventHandler for Handler {
     }
 }
 
-// Axum 핸들러 함수
 async fn root_handler() -> &'static str {
     "Discord Epitulus Bot is running!"
 }
@@ -34,52 +34,85 @@ async fn health_handler() -> &'static str {
 
 #[tokio::main]
 async fn main() {
-    // 로깅 설정 (선택 사항, tracing 사용 시)
-    // tracing_subscriber::fmt::init(); // Cargo.toml에서 tracing 관련 주석 해제 필요
-
     // Discord 봇 설정
     let token = env::var("DISCORD_TOKEN").expect("Expected a DISCORD_TOKEN in the environment");
     let intents = GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT;
 
-    let serenity_client_future = async {
-        let mut client = Client::builder(&token, intents)
-            .event_handler(Handler)
-            .await
-            .expect("Err creating client");
-
-        if let Err(why) = client.start().await {
-            println!("Serenity client error: {why:?}");
-        }
-    };
-
     // Axum 웹 서버 설정
     let app = Router::new()
-        .route("/", get(root_handler)) // 루트 경로 핸들러
-        .route("/health", get(health_handler)); // 헬스 체크 경로 (Cloud Run 등에서 유용)
+        .route("/", get(root_handler))
+        .route("/health", get(health_handler));
 
-    // Cloud Run은 PORT 환경 변수를 통해 포트를 제공합니다. 없으면 8080 사용.
-    let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string()).parse::<u16>().expect("PORT must be a valid u16");
-    let addr = SocketAddr::from(([0, 0, 0, 0], port)); // 모든 인터페이스에서 수신 대기
-    println!("Axum server listening on {}", addr);
+    let port_str = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let port = match port_str.parse::<u16>() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Invalid PORT environment variable '{}': {}. Defaulting to 8080.", port_str, e);
+            8080
+        }
+    };
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+
+    // TCP 리스너 바인딩 시도
+    let listener = match TcpListener::bind(addr).await {
+        Ok(l) => {
+            println!("Successfully bound Axum server to {}", addr);
+            l
+        }
+        Err(e) => {
+            eprintln!("Fatal: Failed to bind Axum server to {}: {}", addr, e);
+            std::process::exit(1);
+        }
+    };
+    println!("Axum server will listen on {}", addr);
 
     let axum_server_future = async {
-        axum::serve(tokio::net::TcpListener::bind(addr).await.unwrap(), app) // axum::Server::bind 변경됨
-            .await
-            .unwrap();
+        println!("Starting Axum server...");
+        if let Err(e) = axum::serve(listener, app).await {
+            eprintln!("Axum server error: {:?}", e);
+        }
+        println!("Axum server task completed.");
+    };
+
+    let serenity_client_future = async {
+        println!("Attempting to create Serenity client instance...");
+        let client_result = Client::builder(&token, intents)
+            .event_handler(Handler)
+            .await;
+
+        let mut client = match client_result {
+            Ok(c) => {
+                println!("Serenity client instance created successfully.");
+                c
+            }
+            Err(e) => {
+                eprintln!("Fatal: Error creating Serenity client instance: {:?}", e);
+                return;
+            }
+        };
+
+        println!("Starting Serenity client connection...");
+        if let Err(why) = client.start().await {
+            eprintln!("Serenity client error during startup or runtime: {:?}", why);
+        }
+        println!("Serenity client task completed.");
     };
     
-    // Serenity 클라이언트와 Axum 서버를 동시에 실행
+    println!("Starting application tasks (Serenity client and Axum server)...");
     tokio::select! {
         _ = serenity_client_future => {
-            println!("Serenity client task completed.");
+            eprintln!("Serenity client task finished. This might be due to an error or normal shutdown if applicable.");
         },
         _ = axum_server_future => {
-            println!("Axum server task completed.");
+            eprintln!("Axum server task finished. This might be due to an error.");
         },
-        _ = tokio::signal::ctrl_c() => { // Ctrl+C (SIGINT) 시그널 처리
-            println!("Received Ctrl+C, shutting down.");
+        res = tokio::signal::ctrl_c() => {
+            match res {
+                Ok(()) => println!("Received Ctrl+C, initiating shutdown."),
+                Err(e) => eprintln!("Error waiting for Ctrl+C: {:?}", e),
+            }
         }
     }
 
