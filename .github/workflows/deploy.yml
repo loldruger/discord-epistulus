@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions: # Workload Identity Federation 사용 시 필요
-      contents: 'read'
+      contents: 'write'
       id-token: 'write'
 
     steps:
