@@ -16,4 +16,3 @@ pub async fn initialize_firestore() -> Result<Arc<FirestoreDb>, FirestoreError> 
 
     Ok(Arc::new(db))
 }
-
