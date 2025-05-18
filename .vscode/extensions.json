@@ -1,6 +1,7 @@
 {
     "recommendations": [
         "fill-labs.dependi",
-        "rust-lang.rust-analyzer"
+        "rust-lang.rust-analyzer",
+        "github.vscode-github-actions"
     ]
 }

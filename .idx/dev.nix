@@ -24,6 +24,7 @@
       # "vscodevim.vim"
       "fill-labs.dependi"
       "rust-lang.rust-analyzer"
+      "github.vscode-github-actions"
     ];
     # Enable previews
     previews = {
