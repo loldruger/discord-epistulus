@@ -7,6 +7,9 @@ use std::env;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
+mod firestore;
+mod commands;
+
 struct Handler;
 
 #[async_trait]
@@ -25,7 +28,7 @@ impl EventHandler for Handler {
 }
 
 async fn root_handler() -> &'static str {
-    "Discord Epitulus Bot is running!"
+    "Discord Epistulus Bot is running!"
 }
 
 async fn health_handler() -> &'static str {

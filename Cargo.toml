@@ -10,13 +10,13 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 tokio = { version = "1.45.0", features = ["macros", "rt-multi-thread", "signal"] }
 serenity = { version = "0.12.4", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "framework", "standard_framework"] }
-
-# Axum 추가
 axum = "0.8.4"
 
-# (선택 사항) 정적 파일 서빙 또는 CORS 등을 위한 tower-http
+gcp_auth = "0.12.3"
+firestore = "0.45.0"
+google-cloud-default = "0.4.0"
+
 # tower-http = { version = "0.5.2", features = ["fs", "trace", "cors"] }
 
-# (선택 사항) 로깅을 위한 tracing
 # tracing = "0.1"
 # tracing-subscriber = { version = "0.3", features = ["env-filter"] }

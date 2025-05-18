@@ -1,0 +1,65 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main # main 브랜치에 푸시될 때 실행
+
+env:
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GAR_LOCATION: asia-northeast3 # Artifact Registry 위치
+  SERVICE_NAME: discord-epistulus-service
+  REGION: asia-northeast3 # Cloud Run 리전
+  IMAGE_NAME: discord_epistulus
+
+jobs:
+  build-and-deploy:
+    name: Build, Push, and Deploy
+    runs-on: ubuntu-latest
+
+    permissions: # Workload Identity Federation 사용 시 필요
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud (Workload Identity Federation)
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ secrets.WIF_PROVIDER }} # 예: projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider
+        service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }} # 예: my-service-account@my-project.iam.gserviceaccount.com
+
+    # (서비스 계정 키 사용 시 대체 인증 방법)
+    # - name: Authenticate to Google Cloud (Service Account Key)
+    #   uses: google-github-actions/auth@v2
+    #   with:
+    #     credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Configure Docker to use gcloud credential helper
+      run: gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev
+
+    - name: Build Docker image
+      run: |
+        docker build -t ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
+        docker build -t ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}/${{ env.IMAGE_NAME }}:latest .
+
+    - name: Push Docker image to Artifact Registry
+      run: |
+        docker push ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        docker push ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}/${{ env.IMAGE_NAME }}:latest
+
+    - name: Deploy to Cloud Run
+      run: |
+        gcloud run deploy ${{ env.SERVICE_NAME }} \
+          --image ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+          --platform managed \
+          --region ${{ env.REGION }} \
+          --allow-unauthenticated \
+          --update-secrets "DISCORD_TOKEN=${{ secrets.DISCORD_BOT_TOKEN_SECRET_NAME }}:latest" \
+          --set-env-vars "GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }}" \
+          --project ${{ env.GCP_PROJECT_ID }}
