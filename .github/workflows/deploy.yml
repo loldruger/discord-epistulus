@@ -29,14 +29,8 @@ jobs:
     - name: Authenticate to Google Cloud (Workload Identity Federation)
       uses: google-github-actions/auth@v2
       with:
-        workload_identity_provider: ${{ secrets.WIF_PROVIDER }} # 예: projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider
-        service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }} # 예: my-service-account@my-project.iam.gserviceaccount.com
-
-    # (서비스 계정 키 사용 시 대체 인증 방법)
-    # - name: Authenticate to Google Cloud (Service Account Key)
-    #   uses: google-github-actions/auth@v2
-    #   with:
-    #     credentials_json: ${{ secrets.GCP_SA_KEY }}
+        workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+        service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
 
     - name: Set up Cloud SDK
       uses: google-github-actions/setup-gcloud@v2

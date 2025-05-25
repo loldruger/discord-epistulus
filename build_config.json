@@ -1,0 +1,18 @@
+{
+  "gcp": {
+    "project_id": "epistulus",
+    "region": "asia-northeast3",
+    "artifact_registry": {
+      "location": "asia-northeast3",
+      "repository": "discord-epistulus-repo"
+    }
+  },
+  "docker": {
+    "image_name": "discord-epistulus",
+    "image_tag": "latest"
+  },
+  "scripts": {
+    "gcloud_installation": "./build/gcloud_installation.py",
+    "gcloud_reinit": "./build/gcloud_reinit.py"
+  }
+}
