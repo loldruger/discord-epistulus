@@ -1,0 +1,35 @@
+{
+  "gcp": {
+    "project_id": "",
+    "region": "asia-northeast3",
+    "artifact_registry": {
+      "location": "asia-northeast3",
+      "repository": "discord-epistulus-repo"
+    },
+    "cloud_run": {
+      "service_name": "discord-epistulus",
+      "memory": "512Mi",
+      "cpu": "1",
+      "min_instances": 0,
+      "max_instances": 10
+    }
+  },
+  "docker": {
+    "image_name": "discord-epistulus",
+    "image_tag": "latest"
+  },
+  "github": {
+    "repository": "",
+    "secrets": {
+      "GCP_PROJECT_ID": true,
+      "GAR_LOCATION": true,
+      "GAR_REPOSITORY": true,
+      "IMAGE_NAME": true,
+      "IMAGE_TAG": true
+    }
+  },
+  "scripts": {
+    "gcloud_installation": "build/gcloud_installation.py",
+    "gcloud_reinit": "build/gcloud_reinit.py"
+  }
+}

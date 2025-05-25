@@ -37,8 +37,8 @@ async fn health_handler() -> &'static str {
 
 #[tokio::main]
 async fn main() {
-    // Discord 봇 설정
-    let token = env::var("DISCORD_TOKEN").expect("Expected a DISCORD_TOKEN in the environment");
+    // Discord 봇 설정 (옵셔널)
+    let token = env::var("DISCORD_TOKEN").ok();
     let intents = GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT;
@@ -80,27 +80,35 @@ async fn main() {
     };
 
     let serenity_client_future = async {
-        println!("Attempting to create Serenity client instance...");
-        let client_result = Client::builder(&token, intents)
-            .event_handler(Handler)
-            .await;
+        if let Some(token) = token {
+            println!("Attempting to create Serenity client instance...");
+            let client_result = Client::builder(&token, intents)
+                .event_handler(Handler)
+                .await;
 
-        let mut client = match client_result {
-            Ok(c) => {
-                println!("Serenity client instance created successfully.");
-                c
-            }
-            Err(e) => {
-                eprintln!("Fatal: Error creating Serenity client instance: {:?}", e);
-                return;
-            }
-        };
+            let mut client = match client_result {
+                Ok(c) => {
+                    println!("Serenity client instance created successfully.");
+                    c
+                }
+                Err(e) => {
+                    eprintln!("Error creating Serenity client instance: {:?}", e);
+                    return;
+                }
+            };
 
-        println!("Starting Serenity client connection...");
-        if let Err(why) = client.start().await {
-            eprintln!("Serenity client error during startup or runtime: {:?}", why);
+            println!("Starting Serenity client connection...");
+            if let Err(why) = client.start().await {
+                eprintln!("Serenity client error during startup or runtime: {:?}", why);
+            }
+            println!("Serenity client task completed.");
+        } else {
+            println!("Discord token not provided, skipping Discord bot initialization");
+            // Keep the task alive
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+            }
         }
-        println!("Serenity client task completed.");
     };
     
     println!("Starting application tasks (Serenity client and Axum server)...");

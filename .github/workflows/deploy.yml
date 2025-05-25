@@ -7,11 +7,11 @@ on:
 
 env:
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  GAR_LOCATION: asia-northeast3 # Artifact Registry 위치
-  GAR_REPOSITORY: epistulus # Artifact Registry repository name
-  SERVICE_NAME: discord-epistulus-service # Cloud Run service name
-  REGION: asia-northeast3 # Cloud Run 리전
-  IMAGE_NAME: discord_epistulus # Docker image name
+  GAR_LOCATION: ${{ secrets.GAR_LOCATION }}
+  GAR_REPOSITORY: ${{ secrets.GAR_REPOSITORY }}
+  SERVICE_NAME: ${{ secrets.SERVICE_NAME }}
+  REGION: ${{ secrets.GAR_LOCATION }}
+  IMAGE_NAME: discord-epistulus
 
 jobs:
   build-and-deploy:
@@ -55,6 +55,73 @@ jobs:
           --platform managed \
           --region ${{ env.REGION }} \
           --allow-unauthenticated \
-          --update-secrets "DISCORD_TOKEN=${{ secrets.DISCORD_BOT_TOKEN }}:latest" \
-          --set-env-vars "GCP_PROJECT_ID=${{ env.GCP_PROJECT_ID }}" \
+          --port 8080 \
+          --memory 512Mi \
+          --cpu 1 \
+          --concurrency 80 \
+          --timeout 300 \
           --project ${{ env.GCP_PROJECT_ID }}
+          
+    - name: Update service with Discord token (if provided)
+      if: secrets.DISCORD_BOT_TOKEN != ''
+      run: |
+        gcloud run services update ${{ env.SERVICE_NAME }} \
+          --region ${{ env.REGION }} \
+          --set-env-vars "DISCORD_TOKEN=${{ secrets.DISCORD_BOT_TOKEN }}" \
+          --project ${{ env.GCP_PROJECT_ID }}
+
+    - name: Get service URL
+      run: |
+        SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+          --region ${{ env.REGION }} \
+          --project ${{ env.GCP_PROJECT_ID }} \
+          --format="value(status.url)")
+        echo "🚀 Service deployed to: $SERVICE_URL"
+        echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_ENV
+
+  # 빌드 테스트 job (모든 브랜치에서 실행)
+  test:
+    name: Test Build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+        components: rustfmt, clippy
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Check formatting
+      run: cargo fmt -- --check
+
+    - name: Run clippy
+      run: cargo clippy -- -D warnings
+
+    - name: Build project
+      run: cargo build --release
+
+    - name: Run tests
+      run: cargo test

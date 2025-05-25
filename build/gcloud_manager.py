@@ -175,10 +175,29 @@ class GCloudManager:
             else:
                 print("Please enter 'y' or 'n'")
     
+    def check_gcloud_auth(self) -> bool:
+        """Check if gcloud is already authenticated"""
+        if not self.gcloud_path:
+            return False
+            
+        try:
+            result = self.run_command([str(self.gcloud_path), "auth", "list", "--format=value(account)"], capture_output=True)
+            if result.stdout.strip():
+                self.logger.info(f"gcloud already authenticated as: {result.stdout.strip()}")
+                return True
+            return False
+        except subprocess.CalledProcessError:
+            return False
+    
     def authenticate_gcloud(self):
         """Handle gcloud authentication and initialization"""
-        # Ask user if they want to re-initialize gcloud configuration
+        # Check if already authenticated
+        if self.check_gcloud_auth():
+            if not self.ask_user_confirmation("gcloud is already authenticated. Do you want to re-authenticate?"):
+                self.logger.info("Skipping gcloud authentication.")
+                return
         
+        # Ask user if they want to re-initialize gcloud configuration
         if self.ask_user_confirmation("Do you want to reset your current gcloud configuration before proceeding?"):
             self.logger.info("Running gcloud configuration reset...")
             
@@ -212,19 +231,34 @@ class GCloudManager:
             self.logger.error("gcloud path is not set. Cannot proceed with authentication.")
             sys.exit(1)
         
-        # Run gcloud commands
-        gcloud_commands = [
-            [self.gcloud_path, "init", "--skip-diagnostics", "--no-launch-browser"],
-            [self.gcloud_path, "auth", "login", "--no-browser"],
-            [self.gcloud_path, "auth", "application-default", "login", "--no-launch-browser"]
-        ]
+        # Check if we need to run gcloud init
+        try:
+            # Check if project is already set
+            result = self.run_command([str(self.gcloud_path), "config", "get-value", "project"], capture_output=True)
+            if result.stdout.strip():
+                self.logger.info(f"gcloud project already set: {result.stdout.strip()}")
+            else:
+                self.logger.info("Running gcloud init...")
+                self.run_command([str(self.gcloud_path), "init", "--skip-diagnostics", "--no-launch-browser"])
+        except subprocess.CalledProcessError:
+            self.logger.info("Running gcloud init...")
+            self.run_command([str(self.gcloud_path), "init", "--skip-diagnostics", "--no-launch-browser"])
         
-        for cmd in gcloud_commands:
+        # Check authentication again after init
+        if not self.check_gcloud_auth():
+            self.logger.info("Authentication required...")
             try:
-                self.run_command(cmd)
+                self.run_command([str(self.gcloud_path), "auth", "login", "--no-browser"])
             except subprocess.CalledProcessError:
-                self.logger.error(f"Command failed: {' '.join(cmd)}")
-                sys.exit(1)
+                self.logger.warning("Regular auth login failed, trying alternative method...")
+                self.logger.info("Please authenticate manually by running: gcloud auth login")
+                input("Press Enter after you have completed authentication...")
+        
+        # Application default credentials (optional, skip if fails)
+        try:
+            self.run_command([str(self.gcloud_path), "auth", "application-default", "login", "--no-launch-browser"])
+        except subprocess.CalledProcessError:
+            self.logger.warning("Application default credentials setup failed. This is optional and can be set up later if needed.")
     
     def get_gcloud_path(self) -> str | None:
         """Get the gcloud executable path"""

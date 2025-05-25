@@ -11,6 +11,9 @@
     "image_name": "discord-epistulus",
     "image_tag": "latest"
   },
+  "discord": {
+    "token": "YOUR_DISCORD_TOKEN_HERE"
+  },
   "scripts": {
     "gcloud_installation": "./build/gcloud_installation.py",
     "gcloud_reinit": "./build/gcloud_reinit.py"
