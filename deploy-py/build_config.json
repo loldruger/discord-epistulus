@@ -27,9 +27,5 @@
       "IMAGE_NAME": true,
       "IMAGE_TAG": true
     }
-  },
-  "scripts": {
-    "gcloud_installation": "build/gcloud_installation.py",
-    "gcloud_reinit": "build/gcloud_reinit.py"
   }
 }

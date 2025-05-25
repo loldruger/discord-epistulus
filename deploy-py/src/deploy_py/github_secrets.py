@@ -9,10 +9,10 @@ import requests
 from typing import Any
 
 try:
-    from nacl import encoding, public  # type: ignore[import-untyped]
-    NACL_AVAILABLE = True
+    from nacl import public  # type: ignore[import-untyped]
+    nacl_available = True
 except ImportError:
-    NACL_AVAILABLE = False
+    nacl_available = False
     print("PyNaCl 라이브러리가 설치되지 않았습니다. GitHub secrets 암호화를 위해 설치가 필요합니다:")
     print("pip install PyNaCl")
 
@@ -43,7 +43,7 @@ class GitHubSecretsManager:
     
     def encrypt_secret(self, public_key_data: dict[str, Any], secret_value: str) -> str:
         """Secret 값을 public key로 암호화 (NaCl sealed box 사용)"""
-        if not NACL_AVAILABLE:
+        if not nacl_available:
             raise ImportError("PyNaCl 라이브러리가 필요합니다. 'pip install PyNaCl'로 설치하세요.")
         
         try:

@@ -64,10 +64,6 @@ class ConfigManager:
                     "IMAGE_NAME": True,
                     "IMAGE_TAG": True
                 }
-            },
-            "scripts": {
-                "gcloud_installation": "build/gcloud_installation.py",
-                "gcloud_reinit": "build/gcloud_reinit.py"
             }
         }
     
