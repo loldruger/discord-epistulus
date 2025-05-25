@@ -7,9 +7,14 @@ import sys
 import base64
 import requests
 from typing import Any
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives import hashes
+
+try:
+    from nacl import encoding, public  # type: ignore[import-untyped]
+    NACL_AVAILABLE = True
+except ImportError:
+    NACL_AVAILABLE = False
+    print("PyNaCl 라이브러리가 설치되지 않았습니다. GitHub secrets 암호화를 위해 설치가 필요합니다:")
+    print("pip install PyNaCl")
 
 
 class GitHubSecretsManager:
@@ -37,20 +42,25 @@ class GitHubSecretsManager:
             raise Exception(f"Failed to get public key: {response.status_code} - {response.text}")
     
     def encrypt_secret(self, public_key_data: dict[str, Any], secret_value: str) -> str:
-        """Secret 값을 public key로 암호화"""
-        public_key_bytes = base64.b64decode(public_key_data["key"])
-        public_key = serialization.load_pem_public_key(public_key_bytes)
+        """Secret 값을 public key로 암호화 (NaCl sealed box 사용)"""
+        if not NACL_AVAILABLE:
+            raise ImportError("PyNaCl 라이브러리가 필요합니다. 'pip install PyNaCl'로 설치하세요.")
         
-        encrypted = public_key.encrypt(  # type: ignore[attr-defined]
-            secret_value.encode('utf-8'),
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None
-            )
-        )
-        
-        return base64.b64encode(encrypted).decode('utf-8')  # type: ignore[arg-type]
+        try:
+            # GitHub API 공개키는 base64로 인코딩된 NaCl 공개키
+            public_key_bytes = base64.b64decode(public_key_data["key"])
+            public_key_obj = public.PublicKey(public_key_bytes)  # type: ignore[attr-defined]
+            
+            # sealed box로 암호화
+            sealed_box = public.SealedBox(public_key_obj)  # type: ignore[attr-defined]
+            encrypted = sealed_box.encrypt(secret_value.encode('utf-8'))  # type: ignore[attr-defined]
+            
+            return base64.b64encode(encrypted).decode('utf-8')  # type: ignore[arg-type]
+            
+        except Exception as e:
+            print(f"암호화 중 오류: {e}")
+            print(f"공개키 데이터: {public_key_data}")
+            raise
     
     def set_secret(self, secret_name: str, secret_value: str) -> bool:
         """Secret 설정"""
