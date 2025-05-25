@@ -63,7 +63,9 @@ jobs:
           --project ${{ env.GCP_PROJECT_ID }}
           
     - name: Update service with Discord token (if provided)
-      if: secrets.DISCORD_BOT_TOKEN != ''
+      env:
+        DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+      if: env.DISCORD_BOT_TOKEN != ''
       run: |
         gcloud run services update ${{ env.SERVICE_NAME }} \
           --region ${{ env.REGION }} \
