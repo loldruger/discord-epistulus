@@ -1,131 +1,207 @@
 use axum::{routing::get, Router};
-use serenity::async_trait;
-use serenity::model::channel::Message;
-use serenity::model::gateway::Ready;
-use serenity::prelude::*;
+use poise::serenity_prelude as serenity;
 use std::env;
-use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
+use std::time::Duration;
 
 mod firestore;
 mod commands;
+mod models;
+mod feed_collector;
+mod notification;
 
-struct Handler;
+use crate::feed_collector::FeedCollector;
+use crate::models::{FeedSource, ChannelSubscription};
+use crate::notification::NotificationService;
+use crate::firestore::FirestoreService;
+use std::collections::HashMap;
 
-#[async_trait]
-impl EventHandler for Handler {
-    async fn message(&self, ctx: Context, msg: Message) {
-        if msg.content == "!ping" {
-            if let Err(why) = msg.channel_id.say(&ctx.http, "Pong!").await {
-                eprintln!("Error sending message: {:?}", why);
+// Poise 타입 정의 (commands 모듈에서도 사용)
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+pub type Context<'a> = poise::Context<'a, BotState, Error>;
+
+// 간단한 인메모리 저장소 (Firestore와 동기화)
+type FeedStorage = Arc<tokio::sync::RwLock<HashMap<String, FeedSource>>>;
+type SubscriptionStorage = Arc<tokio::sync::RwLock<HashMap<u64, ChannelSubscription>>>;
+
+#[derive(Clone)]
+pub struct BotState {
+    pub feeds: FeedStorage,
+    pub subscriptions: SubscriptionStorage,
+    pub feed_collector: Arc<FeedCollector>,
+    pub notification_service: Arc<NotificationService>,
+    pub firestore: Arc<FirestoreService>,
+}
+
+impl BotState {
+    pub async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        // Firestore 서비스 초기화
+        let firestore = Arc::new(FirestoreService::new().await?);
+        
+        // Firestore에서 기존 데이터 로드
+        let feeds_data = firestore.load_all_feeds().await.unwrap_or_else(|e| {
+            eprintln!("피드 데이터 로드 실패: {}. 빈 저장소로 시작합니다.", e);
+            HashMap::new()
+        });
+        
+        let subscriptions_data = firestore.load_all_subscriptions().await.unwrap_or_else(|e| {
+            eprintln!("구독 데이터 로드 실패: {}. 빈 저장소로 시작합니다.", e);
+            HashMap::new()
+        });
+
+        Ok(Self {
+            feeds: Arc::new(tokio::sync::RwLock::new(feeds_data)),
+            subscriptions: Arc::new(tokio::sync::RwLock::new(subscriptions_data)),
+            feed_collector: Arc::new(FeedCollector::new("Discord-Epistulus-Bot/1.0".to_string())),
+            notification_service: Arc::new(NotificationService::new()),
+            firestore,
+        })
+    }
+
+    /// 새로운 포스트를 수집하고 구독자들에게 알림을 보냄
+    pub async fn collect_and_notify(&self, ctx: &serenity::Context) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let feeds = self.feeds.read().await;
+        let subscriptions = self.subscriptions.read().await;
+
+        for (feed_id, feed_source) in feeds.iter() {
+            if !feed_source.enabled {
+                continue;
             }
-        }
-    }
 
-    async fn ready(&self, _: Context, ready: Ready) {
-        println!("{} is connected!", ready.user.name);
-    }
-}
+            // 피드에서 새로운 포스트 수집
+            match self.feed_collector.collect_posts(feed_source).await {
+                Ok(posts) => {
+                    if posts.is_empty() {
+                        continue;
+                    }
 
-async fn root_handler() -> &'static str {
-    "Discord Epistulus Bot is running!"
-}
+                    // 이 피드를 구독하는 채널들 찾기
+                    let subscribing_channels: Vec<_> = subscriptions.iter()
+                        .filter(|(_, sub)| sub.subscribed_sources.contains(feed_id))
+                        .collect();
 
-async fn health_handler() -> &'static str {
-    "OK"
-}
+                    for (channel_id, subscription) in subscribing_channels {
+                        let channel_id = serenity::model::id::ChannelId::new(*channel_id);
+                        
+                        // 새로운 포스트들을 알림으로 보내기
+                        if let Err(e) = NotificationService::send_notifications(
+                            ctx,
+                            channel_id,
+                            posts.clone(),
+                            &subscription.notification_settings,
+                        ).await {
+                            eprintln!("채널 {}에 알림 전송 실패: {:?}", channel_id, e);
+                        }
+                    }
 
-#[tokio::main]
-async fn main() {
-    // Discord 봇 설정 (옵셔널)
-    let token = env::var("DISCORD_TOKEN").ok();
-    let intents = GatewayIntents::GUILD_MESSAGES
-        | GatewayIntents::DIRECT_MESSAGES
-        | GatewayIntents::MESSAGE_CONTENT;
-
-    // Axum 웹 서버 설정
-    let app = Router::new()
-        .route("/", get(root_handler))
-        .route("/health", get(health_handler));
-
-    let port_str = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-    let port = match port_str.parse::<u16>() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Invalid PORT environment variable '{}': {}. Defaulting to 8080.", port_str, e);
-            8080
-        }
-    };
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-
-    // TCP 리스너 바인딩 시도
-    let listener = match TcpListener::bind(addr).await {
-        Ok(l) => {
-            println!("Successfully bound Axum server to {}", addr);
-            l
-        }
-        Err(e) => {
-            eprintln!("Fatal: Failed to bind Axum server to {}: {}", addr, e);
-            std::process::exit(1);
-        }
-    };
-    println!("Axum server will listen on {}", addr);
-
-    let axum_server_future = async {
-        println!("Starting Axum server...");
-        if let Err(e) = axum::serve(listener, app).await {
-            eprintln!("Axum server error: {:?}", e);
-        }
-        println!("Axum server task completed.");
-    };
-
-    let serenity_client_future = async {
-        if let Some(token) = token {
-            println!("Attempting to create Serenity client instance...");
-            let client_result = Client::builder(&token, intents)
-                .event_handler(Handler)
-                .await;
-
-            let mut client = match client_result {
-                Ok(c) => {
-                    println!("Serenity client instance created successfully.");
-                    c
+                    println!("피드 '{}': {}개의 새로운 포스트 처리됨", feed_source.name, posts.len());
+                    
+                    // Firestore에 last_updated 시간 업데이트
+                    if let Err(e) = self.firestore.update_feed_last_updated(feed_id, chrono::Utc::now()).await {
+                        eprintln!("피드 업데이트 시간 저장 실패: {}", e);
+                    }
                 }
                 Err(e) => {
-                    eprintln!("Error creating Serenity client instance: {:?}", e);
-                    return;
+                    eprintln!("피드 '{}' 수집 실패: {:?}", feed_source.name, e);
                 }
-            };
+            }
+        }
 
-            println!("Starting Serenity client connection...");
-            if let Err(why) = client.start().await {
-                eprintln!("Serenity client error during startup or runtime: {:?}", why);
-            }
-            println!("Serenity client task completed.");
-        } else {
-            println!("Discord token not provided, skipping Discord bot initialization");
-            // Keep the task alive
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
-            }
+        Ok(())
+    }
+}
+
+// Event handler for when the bot is ready
+async fn on_ready(
+    _ctx: &serenity::Context,
+    ready: &serenity::Ready,
+    _framework: &poise::Framework<BotState, Error>,
+) -> Result<(), Error> {
+    println!("{} is connected!", ready.user.name);
+    Ok(())
+}
+
+// Main function
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // 환경 변수에서 Discord 토큰 읽기
+    let token = env::var("DISCORD_TOKEN")
+        .expect("환경 변수 DISCORD_TOKEN이 설정되지 않았습니다");
+    
+    // Bot state 초기화 (Firestore 연결 포함)
+    let bot_state = match BotState::new().await {
+        Ok(state) => Arc::new(state),
+        Err(e) => {
+            eprintln!("Bot state 초기화 실패: {}", e);
+            return Err(e);
         }
     };
     
-    println!("Starting application tasks (Serenity client and Axum server)...");
+    // 백그라운드 피드 수집 작업 시작
+    let _feed_collection_state = bot_state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300)); // 5분마다
+        loop {
+            interval.tick().await;
+            // 여기서는 Context가 없으므로 피드 수집만 수행
+            // 실제 알림은 다른 방법으로 처리해야 함
+            println!("피드 수집 작업 실행 중...");
+        }
+    });
+
+    // Poise 프레임워크 설정
+    let framework = poise::Framework::builder()
+        .options(poise::FrameworkOptions {
+            commands: vec![
+                commands::ping(),
+                commands::help(),
+                commands::add_feed(),
+                commands::list_feeds(),
+                commands::remove_feed(),
+                commands::subscribe(),
+                commands::unsubscribe(),
+                commands::list_subscriptions(),
+                commands::test_feed(),
+                commands::status(),
+            ],
+            ..Default::default()
+        })
+        .setup(|ctx, _ready, framework| {
+            Box::pin(async move {
+                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                println!("Bot is connected!");
+                Ok((*bot_state).clone())
+            })
+        })
+        .build();
+
+    // Discord client 생성 및 실행
+    let mut client = serenity::ClientBuilder::new(token, serenity::GatewayIntents::non_privileged())
+        .framework(framework)
+        .await?;
+
+    // 웹 서버 시작 (Firebase Functions 호스팅용)
+    let app = Router::new()
+        .route("/", get(|| async { "Discord Epistulus Bot is running!" }))
+        .route("/health", get(|| async { "OK" }));
+
+    let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
+    println!("웹 서버가 8080 포트에서 시작되었습니다.");
+
+    // Discord 봇과 웹 서버를 동시에 실행
     tokio::select! {
-        _ = serenity_client_future => {
-            eprintln!("Serenity client task finished. This might be due to an error or normal shutdown if applicable.");
-        },
-        _ = axum_server_future => {
-            eprintln!("Axum server task finished. This might be due to an error.");
-        },
-        res = tokio::signal::ctrl_c() => {
-            match res {
-                Ok(()) => println!("Received Ctrl+C, initiating shutdown."),
-                Err(e) => eprintln!("Error waiting for Ctrl+C: {:?}", e),
+        result = client.start() => {
+            if let Err(why) = result {
+                println!("Discord 클라이언트 오류: {:?}", why);
+            }
+        }
+        result = axum::serve(listener, app) => {
+            if let Err(why) = result {
+                println!("웹 서버 오류: {:?}", why);
             }
         }
     }
 
-    println!("Application shutting down.");
+    Ok(())
 }
