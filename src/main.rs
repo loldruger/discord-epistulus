@@ -1,4 +1,4 @@
-use axum::{routing::get, Router};
+use axum::{routing::{get, post}, Router};
 use poise::serenity_prelude as serenity;
 use std::env;
 use std::sync::Arc;
@@ -10,11 +10,13 @@ mod commands;
 mod models;
 mod feed_collector;
 mod notification;
+mod payment;
 
 use crate::feed_collector::FeedCollector;
 use crate::models::{FeedSource, ChannelSubscription};
 use crate::notification::NotificationService;
 use crate::firestore::FirestoreService;
+use crate::payment::PaymentService;
 use std::collections::HashMap;
 
 // Poise 타입 정의 (commands 모듈에서도 사용)
@@ -33,6 +35,7 @@ pub struct BotState {
     pub feed_collector: Arc<FeedCollector>,
     pub notification_service: Arc<NotificationService>,
     pub firestore: Arc<FirestoreService>,
+    pub payment_service: Arc<PaymentService>,
 }
 
 impl BotState {
@@ -48,12 +51,19 @@ impl BotState {
             HashMap::new()
         });
 
+        // Stripe 키를 환경변수에서 가져오기
+        let stripe_secret_key = env::var("STRIPE_SECRET_KEY")
+            .unwrap_or_else(|_| "sk_test_default".to_string());
+        let stripe_webhook_secret = env::var("STRIPE_WEBHOOK_SECRET")
+            .unwrap_or_else(|_| "whsec_default".to_string());
+
         Ok(Self {
             feeds: Arc::new(tokio::sync::RwLock::new(feeds_data)),
             subscriptions: Arc::new(tokio::sync::RwLock::new(subscriptions_data)),
             feed_collector: Arc::new(FeedCollector::new("Discord-Epistulus-Bot/1.0".to_string())),
             notification_service: Arc::new(NotificationService::new()),
-            firestore,
+            firestore: firestore.clone(),
+            payment_service: Arc::new(PaymentService::new(stripe_secret_key, stripe_webhook_secret)),
         })
     }
 
@@ -170,6 +180,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     });
 
+    // 클로저에서 사용할 bot_state 복제
+    let bot_state_for_setup = bot_state.clone();
+    
     // Poise 프레임워크 설정
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -184,6 +197,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 commands::list_subscriptions(),
                 commands::test_feed(),
                 commands::status(),
+                // 결제 관련 명령어들
+                commands::billing(),
+                commands::upgrade(),
+                commands::cancel_subscription(),
+                commands::plans(),
             ],
             ..Default::default()
         })
@@ -191,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Box::pin(async move {
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
                 println!("Bot is connected!");
-                Ok((*bot_state).clone())
+                Ok((*bot_state_for_setup).clone())
             })
         })
         .build();
@@ -201,10 +219,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .framework(framework)
         .await?;
 
+    let state = bot_state.clone();
+
     // 웹 서버 시작 (Firebase Functions 호스팅용)
     let app = Router::new()
         .route("/", get(|| async { "Discord Epistulus Bot is running!" }))
-        .route("/health", get(|| async { "OK" }));
+        .route("/health", get(|| async { "OK" }))
+        .route("/webhook/stripe", post(PaymentService::handle_webhook))
+        .with_state(state);
 
     let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
     println!("웹 서버가 8080 포트에서 시작되었습니다.");

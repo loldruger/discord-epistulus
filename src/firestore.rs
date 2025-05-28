@@ -9,6 +9,8 @@ pub enum FirestoreError {
     FirestoreError(#[from] firestore::errors::FirestoreError),
     #[error("직렬화 오류: {0}")]
     SerializationError(#[from] serde_json::Error),
+    #[error("문서를 찾을 수 없음: {0}")]
+    DocumentNotFound(String),
 }
 
 pub struct FirestoreService {
@@ -236,6 +238,73 @@ impl FirestoreService {
         // 필요한 인덱스나 초기 설정을 여기서 처리
         println!("Firestore 데이터베이스 초기화 완료");
         Ok(())
+    }
+
+    /// 서버 구독 정보 저장
+    pub async fn save_guild_subscription(&self, subscription: &crate::models::GuildSubscription) -> Result<(), FirestoreError> {
+        self.db
+            .fluent()
+            .update()
+            .in_col("guild_subscriptions")
+            .document_id(&subscription.guild_id.to_string())
+            .object(subscription)
+            .execute::<()>()
+            .await
+            .map_err(FirestoreError::FirestoreError)?;
+        
+        println!("서버 구독 정보 저장됨: Guild {} - {:?}", subscription.guild_id, subscription.tier);
+        Ok(())
+    }
+
+    /// 서버 구독 정보 로드
+    pub async fn load_guild_subscription(&self, guild_id: u64) -> Result<crate::models::GuildSubscription, FirestoreError> {
+        let subscription: Option<crate::models::GuildSubscription> = self.db
+            .fluent()
+            .select()
+            .by_id_in("guild_subscriptions")
+            .obj()
+            .one(&guild_id.to_string())
+            .await
+            .map_err(FirestoreError::FirestoreError)?;
+        
+        subscription.ok_or_else(|| FirestoreError::DocumentNotFound(format!("Guild subscription not found: {}", guild_id)))
+    }
+
+    /// 결제 히스토리 저장
+    pub async fn save_payment_history(&self, payment: &crate::models::PaymentHistory) -> Result<(), FirestoreError> {
+        self.db
+            .fluent()
+            .update()
+            .in_col("payment_history")
+            .document_id(&payment.id)
+            .object(payment)
+            .execute::<()>()
+            .await
+            .map_err(FirestoreError::FirestoreError)?;
+        
+        println!("결제 히스토리 저장됨: {}", payment.id);
+        Ok(())
+    }
+
+    /// 서버의 결제 히스토리 로드
+    pub async fn load_payment_history(&self, guild_id: u64) -> Result<Vec<crate::models::PaymentHistory>, FirestoreError> {
+        let payments: Vec<(String, crate::models::PaymentHistory)> = self.db
+            .fluent()
+            .select()
+            .from("payment_history")
+            .obj()
+            .query()
+            .await
+            .map_err(FirestoreError::FirestoreError)?;
+
+        // 해당 서버의 결제 히스토리만 필터링
+        let filtered_payments: Vec<crate::models::PaymentHistory> = payments
+            .into_iter()
+            .map(|(_, payment)| payment)
+            .filter(|payment| payment.guild_id == guild_id)
+            .collect();
+
+        Ok(filtered_payments)
     }
 }
 

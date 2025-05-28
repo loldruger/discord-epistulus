@@ -27,6 +27,12 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
 • `/unsubscribe` - 현재 채널에서 피드 구독 해제
 • `/list_subscriptions` - 현재 채널의 구독 목록
 
+**결제 및 구독:**
+• `/billing` - 현재 구독 정보 확인
+• `/plans` - 사용 가능한 플랜 정보 보기
+• `/upgrade` - 프리미엄/엔터프라이즈 플랜 업그레이드
+• `/cancel_subscription` - 구독 취소
+
 **기타:**
 • `/ping` - 봇 상태 확인
 • `/help` - 이 도움말 표시
@@ -400,5 +406,136 @@ pub async fn status(ctx: Context<'_>) -> Result<(), Error> {
         ctx.say(status_text).await?;
     }
     
+    Ok(())
+}
+
+/// 결제 관련 명령어들
+use crate::models::SubscriptionTier;
+
+/// 서버 구독 정보 확인
+#[poise::command(slash_command)]
+pub async fn billing(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().ok_or("이 명령어는 서버에서만 사용할 수 있습니다.")?;
+    
+    let subscription = ctx.data().payment_service.get_guild_subscription(&ctx.data().firestore, guild_id.get()).await?;
+    
+    let status_text = format!(
+        "💳 **{}** 구독 정보\n\n\
+        📋 **현재 플랜:** {:?}\n\
+        🔄 **상태:** {}\n\
+        📊 **피드 제한:** {}\n\
+        📅 **만료일:** {}\n\
+        💰 **마지막 결제:** {}",
+        ctx.guild().map(|g| g.name.clone()).unwrap_or_default(),
+        subscription.tier,
+        if subscription.is_active { "활성" } else { "비활성" },
+        subscription.tier.feed_limit(),
+        subscription.expires_at
+            .map(|dt| dt.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "없음".to_string()),
+        subscription.last_payment_at
+            .map(|dt| dt.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "없음".to_string())
+    );
+    
+    ctx.say(status_text).await?;
+    Ok(())
+}
+
+/// 프리미엄 구독 업그레이드
+#[poise::command(slash_command)]
+pub async fn upgrade(
+    ctx: Context<'_>,
+    #[description = "구독 플랜 (premium 또는 enterprise)"] plan: String,
+) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().ok_or("이 명령어는 서버에서만 사용할 수 있습니다.")?;
+    
+    let tier = match plan.to_lowercase().as_str() {
+        "premium" => SubscriptionTier::Premium,
+        "enterprise" => SubscriptionTier::Enterprise,
+        _ => {
+            ctx.say("❌ 유효한 플랜을 선택하세요: `premium` 또는 `enterprise`").await?;
+            return Ok(());
+        }
+    };
+    
+    let guild_name = ctx.guild().map(|g| g.name.clone()).unwrap_or_default();
+    
+    match ctx.data().payment_service.create_payment_link(guild_id.get(), tier.clone(), &guild_name).await {
+        Ok(client_secret) => {
+            let price = tier.price_cents().unwrap() as f32 / 100.0;
+            let upgrade_text = format!(
+                "💎 **{}** 플랜 업그레이드\n\n\
+                💰 **가격:** ${:.2} USD\n\
+                📊 **피드 제한:** {}\n\
+                🌟 **혜택:** {}\n\n\
+                🔗 **결제 링크:** ||{}_payment_url||",
+                format!("{:?}", tier),
+                price,
+                tier.feed_limit(),
+                tier.description(),
+                client_secret // 실제로는 완전한 결제 URL이 필요
+            );
+            
+            ctx.say(upgrade_text).await?;
+        }
+        Err(e) => {
+            ctx.say(format!("❌ 결제 링크 생성 실패: {}", e)).await?;
+        }
+    }
+    
+    Ok(())
+}
+
+/// 구독 취소
+#[poise::command(slash_command)]
+pub async fn cancel_subscription(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().ok_or("이 명령어는 서버에서만 사용할 수 있습니다.")?;
+    
+    let subscription = ctx.data().payment_service.get_guild_subscription(&ctx.data().firestore, guild_id.get()).await?;
+    
+    if subscription.tier == SubscriptionTier::Free {
+        ctx.say("ℹ️ 이미 무료 플랜을 사용 중입니다.").await?;
+        return Ok(());
+    }
+    
+    match ctx.data().payment_service.cancel_subscription(&ctx.data().firestore, guild_id.get()).await {
+        Ok(_) => {
+            ctx.say("✅ 구독이 취소되었습니다. 무료 플랜으로 변경됩니다.").await?;
+        }
+        Err(e) => {
+            ctx.say(format!("❌ 구독 취소 실패: {}", e)).await?;
+        }
+    }
+    
+    Ok(())
+}
+
+/// 플랜 정보 보기
+#[poise::command(slash_command)]
+pub async fn plans(ctx: Context<'_>) -> Result<(), Error> {
+    let plans_text = format!(
+        "💎 **구독 플랜 정보**\n\n\
+        🆓 **Free**\n\
+        • 가격: 무료\n\
+        • 피드 제한: 3개\n\
+        • 기본 RSS/Atom 피드 지원\n\n\
+        ⭐ **Premium**\n\
+        • 가격: ${:.2}/월\n\
+        • 피드 제한: 무제한\n\
+        • 우선 지원\n\
+        • 고급 필터링\n\n\
+        🏢 **Enterprise**\n\
+        • 가격: ${:.2}/월\n\
+        • 피드 제한: 무제한\n\
+        • 다중 서버 지원\n\
+        • 전용 지원\n\
+        • 맞춤 기능\n\n\
+        업그레이드하려면 `/upgrade [plan]` 명령어를 사용하세요.",
+        SubscriptionTier::Premium.price_cents().unwrap() as f32 / 100.0,
+        SubscriptionTier::Enterprise.price_cents().unwrap() as f32 / 100.0
+    );
+    
+    ctx.say(plans_text).await?;
     Ok(())
 }

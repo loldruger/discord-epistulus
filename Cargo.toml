@@ -19,6 +19,12 @@ gcp_auth = "0.12.3"
 firestore = "0.45.0"
 google-cloud-default = "0.4.0"
 
+# 결제 시스템
+uuid = { version = "1.17.0", features = ["v4"] }
+hmac = "0.12.1"
+sha2 = "0.10.8"
+hex = "0.4.3"
+
 # tower-http = { version = "0.5.2", features = ["fs", "trace", "cors"] }
 
 # tracing = "0.1"
