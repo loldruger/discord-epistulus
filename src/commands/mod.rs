@@ -45,6 +45,15 @@ pub async fn add_feed(
     #[description = "피드 URL"] url: String,
     #[description = "피드 이름"] name: String,
 ) -> Result<(), Error> {
+    // 서버에서만 실행 가능하도록 제한
+    let guild_id = match ctx.guild_id() {
+        Some(id) => id.get(),
+        None => {
+            ctx.say("❌ 이 명령어는 서버에서만 사용할 수 있습니다.").await?;
+            return Ok(());
+        }
+    };
+
     // URL 유효성 검사
     if !url.starts_with("http://") && !url.starts_with("https://") {
         ctx.say("❌ 올바른 URL을 입력해주세요. (http:// 또는 https://로 시작)").await?;
@@ -56,6 +65,9 @@ pub async fn add_feed(
         .split('/').next().unwrap_or("unknown")
         .replace('.', "_");
 
+    // 서버별 피드 키 생성
+    let feed_key = ctx.data().firestore.create_feed_key(Some(guild_id), &feed_id);
+
     let feed_source = FeedSource {
         id: feed_id.clone(),
         name: name.clone(),
@@ -64,12 +76,13 @@ pub async fn add_feed(
         last_updated: None,
         enabled: true,
         tags: vec![],
+        guild_id: Some(guild_id), // 서버 ID 저장
     };
 
-    // 피드 저장
+    // 피드 저장 (서버별 키 사용)
     {
         let mut feeds = ctx.data().feeds.write().await;
-        feeds.insert(feed_id.clone(), feed_source.clone());
+        feeds.insert(feed_key.clone(), feed_source.clone());
     }
 
     // Firestore에 저장
@@ -86,16 +99,36 @@ pub async fn add_feed(
 /// 등록된 피드 목록 보기
 #[poise::command(slash_command)]
 pub async fn list_feeds(ctx: Context<'_>) -> Result<(), Error> {
+    // 서버에서만 실행 가능하도록 제한
+    let guild_id = match ctx.guild_id() {
+        Some(id) => id.get(),
+        None => {
+            ctx.say("❌ 이 명령어는 서버에서만 사용할 수 있습니다.").await?;
+            return Ok(());
+        }
+    };
+
     let feeds = ctx.data().feeds.read().await;
     
-    let mut response = "📚 **등록된 피드 목록:**\n\n".to_string();
+    let mut response = "📚 **이 서버의 등록된 피드 목록:**\n\n".to_string();
     
-    if feeds.is_empty() {
+    // 현재 서버의 피드만 필터링
+    let server_feeds: Vec<_> = feeds.iter()
+        .filter(|(key, feed)| {
+            // 키가 "guild_id:feed_id" 형태인지 확인하고 guild_id가 일치하는지 체크
+            key.starts_with(&format!("{}:", guild_id)) && 
+            feed.guild_id == Some(guild_id)
+        })
+        .collect();
+    
+    if server_feeds.is_empty() {
         response.push_str("등록된 피드가 없습니다. `/add_feed` 명령어로 피드를 추가해보세요!");
     } else {
-        for (id, feed) in feeds.iter() {
+        for (key, feed) in server_feeds {
             let status = if feed.enabled { "🟢" } else { "🔴" };
-            response.push_str(&format!("• {} **{}** (`{}`)\n  {}\n\n", status, feed.name, id, feed.url));
+            // 키에서 feed_id만 추출해서 표시
+            let display_id = key.split(':').nth(1).unwrap_or(&feed.id);
+            response.push_str(&format!("• {} **{}** (`{}`)\n  {}\n\n", status, feed.name, display_id, feed.url));
         }
     }
 
@@ -109,11 +142,23 @@ pub async fn remove_feed(
     ctx: Context<'_>,
     #[description = "제거할 피드 ID"] feed_id: String,
 ) -> Result<(), Error> {
+    // 서버에서만 실행 가능하도록 제한
+    let guild_id = match ctx.guild_id() {
+        Some(id) => id.get(),
+        None => {
+            ctx.say("❌ 이 명령어는 서버에서만 사용할 수 있습니다.").await?;
+            return Ok(());
+        }
+    };
+
+    // 서버별 피드 키 생성
+    let feed_key = ctx.data().firestore.create_feed_key(Some(guild_id), &feed_id);
+
     let mut feeds = ctx.data().feeds.write().await;
-    if let Some(removed_feed) = feeds.remove(&feed_id) {
+    if let Some(removed_feed) = feeds.remove(&feed_key) {
         drop(feeds); // 락 해제
         
-        // Firestore에서도 삭제
+        // Firestore에서도 삭제 (실제 document ID 사용)
         if let Err(e) = ctx.data().firestore.delete_feed_source(&feed_id).await {
             eprintln!("Firestore에서 피드 삭제 실패: {}", e);
             ctx.say("❌ 피드 삭제 중 오류가 발생했습니다.").await?;
@@ -122,7 +167,7 @@ pub async fn remove_feed(
         
         ctx.say(format!("✅ 피드 '{}'이 제거되었습니다.", removed_feed.name)).await?;
     } else {
-        ctx.say(format!("❌ 피드 ID '{}'를 찾을 수 없습니다.", feed_id)).await?;
+        ctx.say(format!("❌ 이 서버에서 피드 ID '{}'를 찾을 수 없습니다.", feed_id)).await?;
     }
     Ok(())
 }
@@ -133,13 +178,25 @@ pub async fn subscribe(
     ctx: Context<'_>,
     #[description = "구독할 피드 ID"] feed_id: String,
 ) -> Result<(), Error> {
-    // 피드가 존재하는지 확인
+    // 서버에서만 실행 가능하도록 제한
+    let guild_id = match ctx.guild_id() {
+        Some(id) => id.get(),
+        None => {
+            ctx.say("❌ 이 명령어는 서버에서만 사용할 수 있습니다.").await?;
+            return Ok(());
+        }
+    };
+
+    // 서버별 피드 키 생성
+    let feed_key = ctx.data().firestore.create_feed_key(Some(guild_id), &feed_id);
+
+    // 피드가 이 서버에 존재하는지 확인
     let feeds = ctx.data().feeds.read().await;
-    if !feeds.contains_key(&feed_id) {
-        ctx.say(format!("❌ 피드 ID '{}'를 찾을 수 없습니다.", feed_id)).await?;
+    if !feeds.contains_key(&feed_key) {
+        ctx.say(format!("❌ 이 서버에서 피드 ID '{}'를 찾을 수 없습니다.", feed_id)).await?;
         return Ok(());
     }
-    let feed_name = feeds.get(&feed_id).unwrap().name.clone();
+    let feed_name = feeds.get(&feed_key).unwrap().name.clone();
     drop(feeds);
 
     // 채널 구독 추가/업데이트
@@ -153,7 +210,7 @@ pub async fn subscribe(
     } else {
         let new_subscription = ChannelSubscription {
             channel_id,
-            guild_id: ctx.guild_id().map(|id| id.get()),
+            guild_id: Some(guild_id),
             subscribed_sources: vec![feed_id.clone()],
             filters: Default::default(),
             notification_settings: Default::default(),
@@ -240,8 +297,20 @@ pub async fn test_feed(
     ctx: Context<'_>,
     #[description = "테스트할 피드 ID"] feed_id: String,
 ) -> Result<(), Error> {
+    // 서버에서만 실행 가능하도록 제한
+    let guild_id = match ctx.guild_id() {
+        Some(id) => id.get(),
+        None => {
+            ctx.say("❌ 이 명령어는 서버에서만 사용할 수 있습니다.").await?;
+            return Ok(());
+        }
+    };
+
+    // 서버별 피드 키 생성
+    let feed_key = ctx.data().firestore.create_feed_key(Some(guild_id), &feed_id);
+
     let feeds = ctx.data().feeds.read().await;
-    if let Some(feed_source) = feeds.get(&feed_id) {
+    if let Some(feed_source) = feeds.get(&feed_key) {
         ctx.say(format!("🔄 피드 '{}' 테스트 중...", feed_source.name)).await?;
 
         match ctx.data().feed_collector.collect_posts(feed_source).await {
@@ -267,7 +336,7 @@ pub async fn test_feed(
             }
         }
     } else {
-        ctx.say(format!("❌ 피드 ID '{}'를 찾을 수 없습니다.", feed_id)).await?;
+        ctx.say(format!("❌ 이 서버에서 피드 ID '{}'를 찾을 수 없습니다.", feed_id)).await?;
     }
     Ok(())
 }
@@ -278,22 +347,58 @@ pub async fn status(ctx: Context<'_>) -> Result<(), Error> {
     let feeds = ctx.data().feeds.read().await;
     let subscriptions = ctx.data().subscriptions.read().await;
     
-    let total_feeds = feeds.len();
-    let active_feeds = feeds.values().filter(|f| f.enabled).count();
-    let total_subscriptions: usize = subscriptions.values()
-        .map(|s| s.subscribed_sources.len())
-        .sum();
+    if let Some(guild_id) = ctx.guild_id() {
+        // 서버별 통계
+        let guild_id = guild_id.get();
+        let server_feeds: Vec<_> = feeds.iter()
+            .filter(|(key, feed)| {
+                key.starts_with(&format!("{}:", guild_id)) && 
+                feed.guild_id == Some(guild_id)
+            })
+            .collect();
+        
+        let server_feed_count = server_feeds.len();
+        let active_server_feeds = server_feeds.iter().filter(|(_, f)| f.enabled).count();
+        
+        let server_subscriptions: Vec<_> = subscriptions.iter()
+            .filter(|(_, sub)| sub.guild_id == Some(guild_id))
+            .collect();
+        
+        let total_server_subscriptions: usize = server_subscriptions.iter()
+            .map(|(_, s)| s.subscribed_sources.len())
+            .sum();
+        
+        let status_text = format!(
+            "🤖 **Discord Epistulus Bot 상태** (이 서버)\n\n\
+            📊 **이 서버 통계:**\n\
+            • 등록된 피드: {} (활성: {})\n\
+            • 총 구독: {}\n\
+            • 구독 채널: {}\n\n\
+            🟢 **상태:** 정상 작동 중",
+            server_feed_count, active_server_feeds, total_server_subscriptions, server_subscriptions.len()
+        );
+        
+        ctx.say(status_text).await?;
+    } else {
+        // DM에서 실행된 경우 전체 통계 표시
+        let total_feeds = feeds.len();
+        let active_feeds = feeds.values().filter(|f| f.enabled).count();
+        let total_subscriptions: usize = subscriptions.values()
+            .map(|s| s.subscribed_sources.len())
+            .sum();
+        
+        let status_text = format!(
+            "🤖 **Discord Epistulus Bot 상태** (전체)\n\n\
+            📊 **전체 통계:**\n\
+            • 등록된 피드: {} (활성: {})\n\
+            • 총 구독: {}\n\
+            • 구독 채널: {}\n\n\
+            🟢 **상태:** 정상 작동 중",
+            total_feeds, active_feeds, total_subscriptions, subscriptions.len()
+        );
+        
+        ctx.say(status_text).await?;
+    }
     
-    let status_text = format!(
-        "🤖 **Discord Epistulus Bot 상태**\n\n\
-        📊 **통계:**\n\
-        • 등록된 피드: {} (활성: {})\n\
-        • 총 구독: {}\n\
-        • 구독 채널: {}\n\n\
-        🟢 **상태:** 정상 작동 중",
-        total_feeds, active_feeds, total_subscriptions, subscriptions.len()
-    );
-    
-    ctx.say(status_text).await?;
     Ok(())
 }

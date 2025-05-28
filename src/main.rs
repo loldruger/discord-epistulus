@@ -22,6 +22,7 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Context<'a> = poise::Context<'a, BotState, Error>;
 
 // 간단한 인메모리 저장소 (Firestore와 동기화)
+// 피드는 서버별로 분리하여 관리: "guild_id:feed_id" 형태의 키 사용
 type FeedStorage = Arc<tokio::sync::RwLock<HashMap<String, FeedSource>>>;
 type SubscriptionStorage = Arc<tokio::sync::RwLock<HashMap<u64, ChannelSubscription>>>;
 
@@ -39,11 +40,8 @@ impl BotState {
         // Firestore 서비스 초기화
         let firestore = Arc::new(FirestoreService::new().await?);
         
-        // Firestore에서 기존 데이터 로드
-        let feeds_data = firestore.load_all_feeds().await.unwrap_or_else(|e| {
-            eprintln!("피드 데이터 로드 실패: {}. 빈 저장소로 시작합니다.", e);
-            HashMap::new()
-        });
+        // 초기화 시에는 빈 저장소로 시작 (서버별 데이터는 런타임에 로드)
+        let feeds_data = HashMap::new();
         
         let subscriptions_data = firestore.load_all_subscriptions().await.unwrap_or_else(|e| {
             eprintln!("구독 데이터 로드 실패: {}. 빈 저장소로 시작합니다.", e);
@@ -59,12 +57,28 @@ impl BotState {
         })
     }
 
+    /// 특정 서버의 피드 데이터를 로드
+    pub async fn load_guild_feeds(&self, guild_id: u64) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let guild_feeds = self.firestore.load_feeds_by_guild(guild_id).await.unwrap_or_else(|e| {
+            eprintln!("서버 {}의 피드 데이터 로드 실패: {}. 빈 상태로 계속합니다.", guild_id, e);
+            HashMap::new()
+        });
+
+        let mut feeds = self.feeds.write().await;
+        for (key, feed) in guild_feeds {
+            feeds.insert(key, feed);
+        }
+
+        println!("서버 {}의 피드 데이터 로드 완료", guild_id);
+        Ok(())
+    }
+
     /// 새로운 포스트를 수집하고 구독자들에게 알림을 보냄
     pub async fn collect_and_notify(&self, ctx: &serenity::Context) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let feeds = self.feeds.read().await;
         let subscriptions = self.subscriptions.read().await;
 
-        for (feed_id, feed_source) in feeds.iter() {
+        for (_feed_key, feed_source) in feeds.iter() {
             if !feed_source.enabled {
                 continue;
             }
@@ -76,9 +90,14 @@ impl BotState {
                         continue;
                     }
 
-                    // 이 피드를 구독하는 채널들 찾기
+                    // 이 피드를 구독하는 채널들 찾기 (feed_id만으로 비교)
+                    let feed_id = &feed_source.id;
                     let subscribing_channels: Vec<_> = subscriptions.iter()
-                        .filter(|(_, sub)| sub.subscribed_sources.contains(feed_id))
+                        .filter(|(_, sub)| {
+                            // 서버가 일치하고 feed_id를 구독하는 채널인지 확인
+                            sub.guild_id == feed_source.guild_id && 
+                            sub.subscribed_sources.contains(feed_id)
+                        })
                         .collect();
 
                     for (channel_id, subscription) in subscribing_channels {
@@ -95,7 +114,8 @@ impl BotState {
                         }
                     }
 
-                    println!("피드 '{}': {}개의 새로운 포스트 처리됨", feed_source.name, posts.len());
+                    println!("피드 '{}' (서버: {:?}): {}개의 새로운 포스트 처리됨", 
+                        feed_source.name, feed_source.guild_id, posts.len());
                     
                     // Firestore에 last_updated 시간 업데이트
                     if let Err(e) = self.firestore.update_feed_last_updated(feed_id, chrono::Utc::now()).await {

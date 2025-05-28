@@ -10,6 +10,7 @@ pub struct FeedSource {
     pub last_updated: Option<chrono::DateTime<chrono::Utc>>,
     pub enabled: bool,
     pub tags: Vec<String>,
+    pub guild_id: Option<u64>, // 서버별 피드 분리를 위한 필드
 }
 
 /// 피드 타입 (RSS, Atom, JSON Feed 등)

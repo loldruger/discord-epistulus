@@ -89,6 +89,54 @@ impl FirestoreService {
         Ok(feed)
     }
 
+    /// 특정 서버의 모든 피드 로드
+    pub async fn load_feeds_by_guild(&self, guild_id: u64) -> Result<HashMap<String, FeedSource>, FirestoreError> {
+        // 모든 피드를 가져와서 클라이언트에서 필터링
+        let all_feeds: Vec<(String, FeedSource)> = self.db
+            .fluent()
+            .select()
+            .from("feeds")
+            .obj()
+            .query()
+            .await
+            .map_err(FirestoreError::FirestoreError)?;
+
+        let mut feed_map = HashMap::new();
+        for (_doc_id, feed) in all_feeds {
+            // 해당 서버의 피드만 필터링
+            if feed.guild_id == Some(guild_id) {
+                let key = format!("{}:{}", guild_id, feed.id);
+                feed_map.insert(key, feed);
+            }
+        }
+
+        println!("서버 {}의 {}개 피드를 Firestore에서 로드함", guild_id, feed_map.len());
+        Ok(feed_map)
+    }
+
+    /// 서버별로 분리된 피드 키 생성
+    pub fn create_feed_key(&self, guild_id: Option<u64>, feed_id: &str) -> String {
+        match guild_id {
+            Some(gid) => format!("{}:{}", gid, feed_id),
+            None => format!("global:{}", feed_id), // DM에서 사용할 경우
+        }
+    }
+
+    /// 피드 키에서 guild_id와 feed_id 분리
+    pub fn parse_feed_key(&self, key: &str) -> (Option<u64>, String) {
+        if let Some((prefix, feed_id)) = key.split_once(':') {
+            if prefix == "global" {
+                (None, feed_id.to_string())
+            } else if let Ok(guild_id) = prefix.parse::<u64>() {
+                (Some(guild_id), feed_id.to_string())
+            } else {
+                (None, key.to_string()) // 잘못된 형식인 경우 전체를 feed_id로 처리
+            }
+        } else {
+            (None, key.to_string()) // 구분자가 없는 경우
+        }
+    }
+
     /// 채널 구독 정보 저장
     pub async fn save_subscription(&self, subscription: &ChannelSubscription) -> Result<(), FirestoreError> {
         let doc_id = subscription.channel_id.to_string();
